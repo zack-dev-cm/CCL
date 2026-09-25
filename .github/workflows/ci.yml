@@ -28,7 +28,7 @@ on:
 
 # Cancel redundant builds
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.os || 'all' }}
   cancel-in-progress: true
 
 env:
@@ -51,15 +51,6 @@ jobs:
       matrix:
         os: ${{ (github.event.inputs.os == 'all' || github.event.inputs.os == '') && fromJSON('["macos-latest", "ubuntu-latest"]') || fromJSON(format('["{0}"]', github.event.inputs.os)) }}
         python-version: ${{ github.event.inputs.python-version != '' && fromJSON(format('["{0}"]', github.event.inputs.python-version)) || fromJSON('["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
-        include:
-          - os: macos-latest
-            label: osx-64
-            prefix: /Users/runner/miniconda3
-
-          - os: ubuntu-latest
-            label: linux-64
-            prefix: /usr/share/miniconda3
-
     steps:
 
       - name: Checkout CCL repository
@@ -81,7 +72,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: "macOS: set env variables"
-        if: matrix.label == 'osx-64'
+        if: runner.os == 'macOS'
         run: |
           echo "DYLD_FALLBACK_LIBRARY_PATH=${CONDA_PREFIX}/lib" >> $GITHUB_ENV
           SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
@@ -98,7 +89,7 @@ jobs:
         uses: actions/cache@v5
         id: cache
         with:
-          path: ${{ matrix.prefix }}
+          path: ${{ env.CONDA }}
           key:
             conda-py${{ matrix.python-version }}-${{
             matrix.os }}--${{
@@ -151,6 +142,9 @@ jobs:
               # a failed compilation cannot be accepted as a valid build.
               (source_path / 'isitgr/isitgrlib.so').unlink()
               env = os.environ.copy()
+              # Conda provides the shared OpenMP runtime on macOS.
+              # ISiTGR's static runtime flags request an absent libgomp.a.
+              env['MAKEFLAGS'] = env.get('MAKEFLAGS', '') + ' SFFLAGS=-dynamiclib'
               env['LIBRARY_PATH'] = os.pathsep.join(filter(None, (
                   env['CONDA_PREFIX'] + '/lib',
                   env['SDKROOT'] + '/usr/lib', env.get('LIBRARY_PATH'))))
@@ -193,7 +187,7 @@ jobs:
           OMP_NUM_THREADS=2 pytest -vv benchmarks --cov=pyccl --cov-report=lcov:lcov.info --cov-append
 
       - name: Code coverage
-        if: matrix.label == 'linux-64'
+        if: runner.os == 'Linux'
         uses: coverallsapp/github-action@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
