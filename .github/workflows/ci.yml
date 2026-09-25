@@ -98,11 +98,32 @@ jobs:
             env.TODAY }}-${{
             env.CACHE_NUMBER }}
 
+      - name: Pin the test Python version
+        env:
+          TEST_PYTHON_VERSION: ${{ matrix.python-version }}
+        run: conda config --env --add pinned_packages "python=${TEST_PYTHON_VERSION}.*"
+
       - name: Install environment packages
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           export MAMBA_NO_BANNER=1  # hide mamba banner from output
           mamba env update --file ${{ env.CONDA_ENV }} --prune
+
+      - name: Verify the test Python version
+        env:
+          TEST_PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          expected = os.environ['TEST_PYTHON_VERSION']
+          actual = f'{sys.version_info.major}.{sys.version_info.minor}'
+          if actual != expected:
+              raise RuntimeError(f'Requested Python {expected}, found {actual}')
+          print(f'Test interpreter: Python {sys.version.split()[0]}')
+          PY
+          python -m pip --version
 
       - name: Rebuild and verify the ISiTGR native library
         if: runner.os == 'macOS'
@@ -180,11 +201,11 @@ jobs:
 
       - name: Unit tests
         run: |
-          OMP_NUM_THREADS=2 pytest -vv pyccl --cov=pyccl --cov-report=lcov:lcov.info
+          OMP_NUM_THREADS=2 python -m pytest -vv pyccl --cov=pyccl --cov-report=lcov:lcov.info
 
       - name: Benchmarks
         run: |
-          OMP_NUM_THREADS=2 pytest -vv benchmarks --cov=pyccl --cov-report=lcov:lcov.info --cov-append
+          OMP_NUM_THREADS=2 python -m pytest -vv benchmarks --cov=pyccl --cov-report=lcov:lcov.info --cov-append
 
       - name: Code coverage
         if: runner.os == 'Linux'
