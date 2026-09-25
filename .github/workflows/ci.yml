@@ -8,6 +8,10 @@ on:
   pull_request: null
   workflow_dispatch:
     inputs:
+      source-ref:
+        description: 'Source commit to check out for validation'
+        required: false
+        type: string
       python-version:
         description: 'Python version to test (leave empty for all)'
         required: false
@@ -36,7 +40,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        shell: bash -l {0}
+        shell: bash -el -o pipefail {0}
 
     permissions:
       contents: read
@@ -60,6 +64,11 @@ jobs:
 
       - name: Checkout CCL repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.source-ref || github.sha }}
+
+      - name: Record tested commit
+        run: git rev-parse HEAD
 
       - name: Set up conda
         uses: conda-incubator/setup-miniconda@v4
@@ -103,6 +112,55 @@ jobs:
         run: |
           export MAMBA_NO_BANNER=1  # hide mamba banner from output
           mamba env update --file ${{ env.CONDA_ENV }} --prune
+
+      - name: Rebuild and verify the ISiTGR native library
+        if: runner.os == 'macOS'
+        run: |
+          python - <<'PY'
+          import hashlib
+          import importlib.metadata
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          import tarfile
+          import tempfile
+          import urllib.request
+
+          version = importlib.metadata.version('isitgr')
+          if version != '1.6.5':
+              raise RuntimeError('Recheck the native build for ISiTGR ' + version)
+          expected = '87890cd59c7befa5d244dee6598ef6ceccd099210dd86547951cf87b682fe366'
+          with urllib.request.urlopen('https://pypi.org/pypi/isitgr/1.6.5/json') as response:
+              metadata = json.load(response)
+          source = next(item for item in metadata['urls']
+                        if item['packagetype'] == 'sdist')
+          with urllib.request.urlopen(source['url']) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise RuntimeError('ISiTGR source archive checksum mismatch')
+          with tempfile.TemporaryDirectory(prefix='isitgr-build-') as temporary:
+              root = pathlib.Path(temporary)
+              archive_path = root / 'isitgr.tar.gz'
+              archive_path.write_bytes(data)
+              with tarfile.open(archive_path) as archive:
+                  archive.extractall(root, filter='data')
+              source_path = root / 'isitgr-1.6.5'
+              # The sdist contains an ELF library. Removing it also ensures
+              # a failed compilation cannot be accepted as a valid build.
+              (source_path / 'isitgr/isitgrlib.so').unlink()
+              env = os.environ.copy()
+              env['LIBRARY_PATH'] = os.pathsep.join(filter(None, (
+                  env['CONDA_PREFIX'] + '/lib',
+                  env['SDKROOT'] + '/usr/lib', env.get('LIBRARY_PATH'))))
+              subprocess.run([
+                  sys.executable, '-m', 'pip', 'install', '--verbose',
+                  '--no-deps', '--no-build-isolation', '--no-cache-dir',
+                  '--force-reinstall', str(source_path)], check=True, env=env)
+          subprocess.run([sys.executable, '-c',
+                          'import isitgr; print(isitgr.__version__)'], check=True)
+          PY
 
       - name: Get pip cache dir
         id: pip-cache
@@ -148,6 +206,8 @@ jobs:
     steps:
       - name: Checkout CCL repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.source-ref || github.sha }}
 
       - name: Lint
         uses: py-actions/flake8@v2
